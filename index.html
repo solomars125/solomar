@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ollama GUI with Memory Management</title>
+    <link href="/static/style.css" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <div class="chat-container">
+            <div class="status-bar">
+                <span class="status-indicator {{ 'online' if ollama_status else 'offline' }}">
+                    Ollama Status: {{ 'Online' if ollama_status else 'Offline' }}
+                </span>
+                <div class="model-select-container">
+                    <select id="model-select" {{ 'disabled' if not ollama_status }}>
+                        {% for model in available_models %}
+                        <option value="{{ model }}">{{ model }}</option>
+                        {% endfor %}
+                    </select>
+                    <button onclick="updateModelsList()" class="refresh-button" title="Refresh Models">↻</button>
+                </div>
+            </div>
+            <div id="chat-messages" class="chat-messages"></div>
+            <form id="chat-form" class="chat-input-form">
+                <input type="text" id="message-input" placeholder="Type your message..." {{ 'disabled' if not ollama_status }}>
+                <button type="submit" {{ 'disabled' if not ollama_status }}>Send</button>
+            </form>
+        </div>
+        
+        <div class="memory-container">
+            <h3>Memory Management</h3>
+            <div class="memory-stats">
+                <div class="stat-item">
+                    <span class="stat-label">Total Memories:</span>
+                    <span class="stat-value">{{ stats.total_memories }}</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Average Importance:</span>
+                    <span class="stat-value">{{ "%.2f"|format(stats.avg_importance) }}</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Memory Types:</span>
+                    <span class="stat-value">{{ stats.memory_types }}</span>
+                </div>
+            </div>
+            <div class="memory-controls">
+                <div class="search-container">
+                    <input type="text" id="search-input" placeholder="Search memories...">
+                    <button onclick="searchMemories()" class="search-button">Search</button>
+                </div>
+                <button onclick="consolidateMemories()" class="consolidate-button">Consolidate</button>
+            </div>
+            <div id="memories-list" class="memories-list">
+                {% for memory in memories %}
+                <div class="memory-item" data-importance="{{ memory.importance }}">
+                    <div class="memory-content">
+                        <p>{{ memory.content }}</p>
+                        <div class="memory-metadata">
+                            <span class="importance">Importance: {{ "%.2f"|format(memory.importance) }}</span>
+                            <span class="type">Type: {{ memory.type }}</span>
+                        </div>
+                    </div>
+                    <div class="memory-actions">
+                        <button onclick="editMemory({{ memory.id }})" class="edit-button">Edit</button>
+                        <button onclick="deleteMemory({{ memory.id }})" class="delete-button">Delete</button>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let isProcessing = false;
+
+        async function checkOllamaStatus() {
+            try {
+                const response = await fetch('/status');
+                const data = await response.json();
+                updateStatus(data.ollama_running);
+            } catch (error) {
+                console.error('Error checking Ollama status:', error);
+                updateStatus(false);
+            }
+        }
+
+        function updateStatus(isOnline) {
+            const statusIndicator = document.querySelector('.status-indicator');
+            const messageInput = document.getElementById('message-input');
+            const sendButton = document.querySelector('#chat-form button');
+            const modelSelect = document.getElementById('model-select');
+
+            statusIndicator.className = `status-indicator ${isOnline ? 'online' : 'offline'}`;
+            statusIndicator.textContent = `Ollama Status: ${isOnline ? 'Online' : 'Offline'}`;
+            messageInput.disabled = !isOnline;
+            sendButton.disabled = !isOnline;
+            modelSelect.disabled = !isOnline;
+
+            if (isOnline) updateModelsList();
+        }
+
+        async function updateModelsList() {
+            try {
+                const response = await fetch('/models');
+                const data = await response.json();
+                const modelSelect = document.getElementById('model-select');
+                modelSelect.innerHTML = data.models
+                    .map(model => `<option value="${model}">${model}</option>`)
+                    .join('');
+            } catch (error) {
+                console.error('Error updating models list:', error);
+            }
+        }
+
+        async function sendMessage(message) {
+            if (isProcessing) return;
+            isProcessing = true;
+            
+            const model = document.getElementById('model-select').value;
+            try {
+                const response = await fetch('/chat', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: `message=${encodeURIComponent(message)}&model=${encodeURIComponent(model)}`
+                });
+                
+                if (!response.ok) throw new Error('Failed to send message');
+                return await response.json();
+            } catch (error) {
+                console.error('Error sending message:', error);
+                return { response: `Error: ${error.message}` };
+            } finally {
+                isProcessing = false;
+            }
+        }
+
+        async function searchMemories() {
+            const query = document.getElementById('search-input').value;
+            try {
+                const response = await fetch('/memories', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: `action=search&query=${encodeURIComponent(query)}`
+                });
+                const results = await response.json();
+                updateMemoriesList(results);
+            } catch (error) {
+                console.error('Error searching memories:', error);
+            }
+        }
+
+        async function consolidateMemories() {
+            try {
+                await fetch('/memories', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                    body: 'action=consolidate'
+                });
+                location.reload();
+            } catch (error) {
+                console.error('Error consolidating memories:', error);
+            }
+        }
+
+        async function deleteMemory(memoryId) {
+            if (confirm('Are you sure you want to delete this memory?')) {
+                try {
+                    await fetch('/memories', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                        body: `action=delete&memory_id=${memoryId}`
+                    });
+                    location.reload();
+                } catch (error) {
+                    console.error('Error deleting memory:', error);
+                }
+            }
+        }
+
+        async function editMemory(memoryId) {
+            const newContent = prompt("Edit memory:");
+            if (newContent) {
+                try {
+                    await fetch('/memories', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                        body: `action=update&memory_id=${memoryId}&content=${encodeURIComponent(newContent)}`
+                    });
+                    location.reload();
+                } catch (error) {
+                    console.error('Error updating memory:', error);
+                }
+            }
+        }
+
+        function updateMemoriesList(memories) {
+            const list = document.getElementById('memories-list');
+            list.innerHTML = memories.map(memory => `
+                <div class="memory-item" data-importance="${memory.importance}">
+                    <div class="memory-content">
+                        <p>${memory.content}</p>
+                        <div class="memory-metadata">
+                            <span class="importance">Importance: ${memory.importance.toFixed(2)}</span>
+                            <span class="type">Type: ${memory.type}</span>
+                        </div>
+                    </div>
+                    <div class="memory-actions">
+                        <button onclick="editMemory(${memory.id})" class="edit-button">Edit</button>
+                        <button onclick="deleteMemory(${memory.id})" class="delete-button">Delete</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        document.getElementById('chat-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const input = document.getElementById('message-input');
+            const message = input.value.trim();
+            if (!message) return;
+            
+            input.value = '';
+            const chatMessages = document.getElementById('chat-messages');
+            chatMessages.innerHTML += `<div class="message user-message">${message}</div>`;
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+
+            const response = await sendMessage(message);
+            chatMessages.innerHTML += `<div class="message bot-message">${response.response}</div>`;
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        });
+
+        setInterval(checkOllamaStatus, 5000);
+        checkOllamaStatus();
+    </script>
+</body>
+</html>
